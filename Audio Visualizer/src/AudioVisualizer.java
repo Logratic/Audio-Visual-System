@@ -12,6 +12,9 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map.Entry;
+
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.Clip;
@@ -27,16 +30,14 @@ public class AudioVisualizer extends JApplet implements Runnable {
 	private final static int DIMENSION = 32;
 	private ArrayList<Color> colorRow;
 	Clip clip;
-	int prevLocation = 0;
-	float floatMultiplier;
-	short[] songShortArray;
-	byte[] songByteArray;
 	long totalTime;
-	int[] heights;
-	int heighest = 0;
+	short[] heights;
 	int amplitude = 0;
-
-	//TODO: Adjust the speed, take highest or average short to set the divisor
+	int heightFrameLength = 0;
+	private final static long WAIT_MICROSECONDS = 40000;
+	HashMap<Integer, Short> frequencies;
+	private final static boolean volumeBased = false;
+	int[] outputHeights;
 
 	//--------------------------------------------------------------
 	//sets up the solver and the grid
@@ -46,23 +47,36 @@ public class AudioVisualizer extends JApplet implements Runnable {
 		File song = null;
 		try
 		{
-			song = new File(System.getProperty("user.dir") + "\\Black Sabbath.wav");
+			song = new File(System.getProperty("user.dir") + "\\Shelter.wav");
 			AudioInputStream audioInputStream = AudioSystem.getAudioInputStream(song);
 			clip = AudioSystem.getClip();
 			clip.open(audioInputStream);
+			//clip.setMicrosecondPosition(clip.getMicrosecondLength() / 10 * 9);
 			FloatControl gainControl = (FloatControl) clip.getControl(FloatControl.Type.MASTER_GAIN);
 			gainControl.setValue(-20.0f); // Reduce volume by 20 decibels.
-			clip.start();
 		} catch (Exception e)
 		{
 			System.out.println(e.getMessage());
 		}
 
-		floatMultiplier = DIMENSION/255f;
-		songShortArray = convertAudioToShort(song);
-		System.out.println(songShortArray.length);
+		convertAudioToShort(song);
+		
+		System.out.println("Length: " + clip.getMicrosecondLength());
+		totalTime = (long)clip.getMicrosecondLength() / WAIT_MICROSECONDS; // casting so it never rounds to int early
+		System.out.println(totalTime + " " + clip.getMicrosecondLength() + " " + heights.length);
+		heightFrameLength = (int)(heights.length/totalTime); // how long each frame is
 
-		totalTime = (long)clip.getMicrosecondLength() / songShortArray.length; // casting float so it never rounds to int early
+		if (volumeBased)
+		{
+			visualizeVolumeBased();
+		}
+		else
+		{
+			visualizeFrequencyBased();
+		}
+
+		heights = null; // Save Memory
+		
 		this.setSize(DIMENSION * SIZE + 1, DIMENSION * SIZE + 1); // sets the size of the app
 		rainbow = new Rainbow();
 		grid = new boolean[DIMENSION][DIMENSION];
@@ -71,8 +85,8 @@ public class AudioVisualizer extends JApplet implements Runnable {
 		Thread t = new Thread(this);
 		t.start();
 	}
-	
-	public short[] convertAudioToShort(File song)
+
+	public void convertAudioToShort(File song)
 	{
 		byte[] temp = new byte[0];
 		short[] shorts = new short[0];
@@ -90,76 +104,137 @@ public class AudioVisualizer extends JApplet implements Runnable {
 		// maybe keep them stereo and draw them from the middle going outward or outward going in
 		long total = 0;
 		short[] monoShorts = new short[shorts.length / 2];
-		heights = new int[monoShorts.length];
-		int zeroCounter = 0;
-		boolean finishedSkipping = false;
+		heights = new short[monoShorts.length];
 		for (int i = 0; i < shorts.length - 2; i+=2)
 		{
 			int location = i/2;
-			monoShorts[location] = (short) ((shorts[i] + shorts[i + 1]) / 2f);
-			if (!finishedSkipping)
+			short short1 = shorts[i];
+			short short2 = shorts[i + 1];
+			if (short1 < 0)
 			{
-				if (monoShorts[location] == 0)
-				{
-					zeroCounter++;
-				}
-				else
-				{
-					finishedSkipping = true;
-				}
+				short1 *= -1;
 			}
-			else
+			if (short2 < 0)
 			{
-				int amt = Math.abs((int)(monoShorts[location] * floatMultiplier));
-				heights[location] = amt;
-				if (amt > heighest)
-				{
-					heighest = amt;
-				}
-				total += amt;
+				short2 *= -1;
 			}
+			monoShorts[location] = (short) ((short1 + short2) / 2f);
+			//int amt = (int)monoShorts[location];
+			heights[location] = monoShorts[location];//amt;
+			total += monoShorts[location];//amt;
 		}
 
-		amplitude = (int) (total / monoShorts.length) / DIMENSION;
-		System.out.println(amplitude);
-		//amplitude = heighest/DIMENSION;
-		// temp = averageBytes(temp, 2); shouldn't be used
-		System.out.println(monoShorts.length + " " + zeroCounter);
-		
-		shorts = new short[monoShorts.length - zeroCounter];
-		int counter = 0;
-		for (int i = 0; i < monoShorts.length; i++)
-		{
-			if (monoShorts[i] == 0)
-			{
-				shorts[i - counter] = monoShorts[i];
-				counter++;
-			}
-			else
-			{
-				break;
-			}
-		}
-		
-		
-		return shorts;
-
+		amplitude = (int) ((total / (long)(monoShorts.length)) / (long)DIMENSION);
+		System.out.println(total + " " + monoShorts.length + " " + DIMENSION + " " + amplitude);
 	}
-
-	// should no longer be used
-	public byte[] averageBytes(byte[] ogBytes, int amt)
+	
+	public void visualizeVolumeBased()
 	{
-		byte[] adjusted = new byte[ogBytes.length / amt];
-		for (int i = 0; i < ogBytes.length - amt; i += amt)
+		outputHeights = new int[(int)totalTime];
+		short[] tempHeights = new short[(int) totalTime];
+		for (int j = 0; j < totalTime; j++)
 		{
-			float average = 0;
-			for (int j = 0; j < amt; j++)
+			long sum = 0;
+			boolean goingUp = false;
+			short tempHighest = 0;
+			int peakCounter = 0;
+			for (int i = 0; i < heightFrameLength; i++)
 			{
-				average += Math.abs(ogBytes[i + j]);
+				short amt = heights[(int) (i + j * heightFrameLength)];
+				if (amt > tempHighest)
+				{
+					goingUp = true;
+					tempHighest = amt;
+				}
+				else if (goingUp && amt < tempHighest)
+				{
+					peakCounter++;
+					sum += tempHighest;
+					goingUp = false;
+					tempHighest = 0;
+				}
 			}
-			adjusted[i/amt] = (byte) (average/amt);
+			if (goingUp)
+			{
+				peakCounter++;
+				sum += tempHighest;
+			}
+			tempHeights[j] = (short) (sum/(short)peakCounter/ (amplitude * 4));
 		}
-		return adjusted;
+		
+		for (int i = 0; i < tempHeights.length; i++)
+		{
+			outputHeights[i] = (int)tempHeights[i];
+		}
+	}
+	
+	public void visualizeFrequencyBased()
+	{
+		int max = 0;
+		short freqWidth = 1;//256 / DIMENSION;
+		boolean passedFirstPeak = false;
+		outputHeights = new int[(int)(totalTime * DIMENSION)];
+		short[] tempHeights = new short[(int)(totalTime * DIMENSION)];
+		for (int j = 0; j < totalTime; j++)
+		{
+			frequencies = new HashMap<Integer, Short>();
+			boolean goingUp = false;
+			short tempHighest = -1;
+			int freqLength = 0;
+			for (int i = 0; i < heightFrameLength; i++)
+			{
+				freqLength++;
+				short amt = heights[(int) (i + j * heightFrameLength)];
+				if (amt > tempHighest)
+				{
+					goingUp = true;
+					tempHighest = amt;
+				}
+				else if (goingUp && amt < tempHighest)
+				{
+					if (passedFirstPeak)
+					{
+						if (!frequencies.containsKey(freqLength))
+						{
+							frequencies.put(freqLength, (short)0);
+						}
+						frequencies.put(freqLength, (short) (frequencies.get(freqLength) + 1));
+					}
+					else
+					{
+						passedFirstPeak = true;
+					}
+					goingUp = false;
+					tempHighest = 0;
+					freqLength = 0;
+				}
+				if (freqLength > max)
+				{
+					max = freqLength;
+				}
+			}
+
+			for (Entry<Integer, Short> entry : frequencies.entrySet())
+			{
+				for (int i = 0; i < DIMENSION; i++)
+				{
+					Integer key = entry.getKey();
+					if (key >= i * freqWidth && key < (i + 1) * freqWidth)
+					{
+						short value = entry.getValue();
+						value /= 4;//(short)(Math.log(value) * 4);
+						value = (short) Math.pow(value, (i + 1)/3);
+						tempHeights[(int)(i + j * DIMENSION) - 2] += value;
+						break;
+					}
+				}
+			}
+		}
+		
+		for (int i = 0; i < tempHeights.length; i++)
+		{
+			outputHeights[i] = (int)tempHeights[i];
+		}
 	}
 
 	//--------------------------------------------------------------
@@ -196,25 +271,22 @@ public class AudioVisualizer extends JApplet implements Runnable {
 	}
 
 
-	public void updateImage()
+	// frequencies
+	public void updateImageFB()
 	{
-		for (int i = prevLocation; i < prevLocation + DIMENSION; i ++)
+		for (int i = 0; i < DIMENSION; i++)
 		{
-			int x = (i - prevLocation);
-			int y = heights[i];
-			y /= amplitude; // used to adjust amplitude
-			/*if (y == 0)
-			{
-				y = heights[i];
-			}
-			if (y == 0)
-			{
-				y = songShortArray[i];
-				System.out.println(songShortArray[i]);
-			}*/
-			turnPixelOn(x, y);
+			turnPixelOn(i, outputHeights[lastTime * DIMENSION + i]);
 		}
-		prevLocation++;
+	}
+
+	//VB = volume based
+	public void updateImageVB()
+	{
+		for (int i = 0; i < DIMENSION; i++)
+		{
+			turnPixelOn(i, outputHeights[lastTime + i]);
+		}
 	}
 
 	//--------------------------------------------------------------
@@ -244,17 +316,28 @@ public class AudioVisualizer extends JApplet implements Runnable {
 	//Loops the paint
 	//--------------------------------------------------------------
 	public void run() {
+		clip.start();
+		long sleepTimer = WAIT_MICROSECONDS/1000;
 		while (true) {
 			try {
-				int tempTime = (int) (clip.getMicrosecondPosition() / totalTime);
-				if (tempTime > lastTime)
+				lastTime = (int) (clip.getMicrosecondPosition() / WAIT_MICROSECONDS);
+				// account for delay from processing the data. Also maybe from slow Java GUI
+				if (volumeBased)
 				{
-					lastTime = tempTime;
-					updateImage();
+					updateImageVB();
 				}
-				Thread.sleep(20);//20
+				else
+				{
+					updateImageFB();
+				}
+				if (lastTime + DIMENSION >= outputHeights.length)
+				{
+					break;
+				}
+				Thread.sleep(sleepTimer);//20
 			} catch (Exception e) {
 				e.printStackTrace();
+				break;
 			}
 			repaint();
 		}
