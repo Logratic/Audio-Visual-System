@@ -222,9 +222,9 @@ public class AudioVisualizer extends JApplet implements Runnable {
 					if (key >= i * freqWidth && key < (i + 1) * freqWidth)
 					{
 						short value = entry.getValue();
-						value /= 4;//(short)(Math.log(value) * 4);
-						value = (short) Math.pow(value, (i + 1)/3);
-						tempHeights[(int)(i + j * DIMENSION) - 2] += value;
+						/*value /= 4;//(short)(Math.log(value) * 4);
+						value = (short) Math.pow(value, (i + 1)/3);*/
+						tempHeights[(int)(i + j * DIMENSION) - 2] += value; // The minus 2 is only for freqWidth 1 for some reason, remove it for all other widths
 						break;
 					}
 				}
